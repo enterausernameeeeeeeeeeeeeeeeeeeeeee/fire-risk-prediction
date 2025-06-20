@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>전기 경보 지도</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <link rel="stylesheet" href="https://openlayers.org/en/v6.15.1/css/ol.css" />
+  <script src="https://openlayers.org/en/v6.15.1/build/ol.js"></script>
+  <style>
+    #map { width: 100%; height: 90vh; }
+    #controls {
+      padding: 10px;
+      background: #f4f4f4;
+      border-bottom: 1px solid #ccc;
+    }
+    .ol-popup {
+      background: white;
+      border: 1px solid black;
+      padding: 10px;
+      position: absolute;
+      bottom: 12px;
+      left: -50px;
+      min-width: 250px;        /* 너비 넉넉하게 */
+      max-width: 350px;        /* 너무 커지는 것도 제한 */
+      white-space: normal;     /* 표 안의 셀은 줄바꿈 허용 */
+      word-break: keep-all;    /* 텍스트가 단어 단위로 줄바꿈 되게 */
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    날짜 선택: <input type="date" id="date" />
+    시간 선택:
+    <select id="hour">
+      <script>
+        for (let i = 0; i < 24; i++) {
+          document.write(`<option value="${i.toString().padStart(2, '0')}">${i}시</option>`);
+        }
+      </script>
+    </select>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    let allFeatures = [];
+    const vectorSource = new ol.source.Vector();
+    const vectorLayer = new ol.layer.Vector({
+      source: vectorSource,
+      
+      style: function (feature) {
+      let color = feature.get('색상');
+
+      //  빨간색: 전기 경보 + 날씨 위험
+      if (color === '빨간색') color = 'red';
+      else if (color === '주황색') color = 'orange';
+      else if (color === '노란색') color = 'yellow';
+      else if (color === '초록색') color = 'green';
+      else color = 'gray'; // 예외 처리
+
+      return new ol.style.Style({
+        image: new ol.style.Circle({
+          radius: 6,
+          fill: new ol.style.Fill({ color: color }),
+          stroke: new ol.style.Stroke({ color: '#000', width: 1 })
+        })
+      });
+    }
+
+
+    });
+
+    const map = new ol.Map({
+      target: 'map',
+      layers: [
+        new ol.layer.Tile({
+          source: new ol.source.XYZ({
+            url: 'https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png?apiKey=4F76721A-B984-3278-AD9F-05864AD8EF10',
+            crossOrigin: 'anonymous'
+          })
+        }),
+        vectorLayer
+      ],
+      view: new ol.View({
+        center: ol.proj.fromLonLat([127.7669, 35.9078]),
+        zoom: 7
+      })
+    });
+
+    const popup = document.createElement('div');
+    popup.className = 'ol-popup';
+    const overlay = new ol.Overlay({
+      element: popup,
+      autoPan: true,
+      autoPanAnimation: { duration: 250 }
+    });
+    map.addOverlay(overlay);
+
+    // GeoJSON 로드
+    $.getJSON('electric_alerts_with_coords.geojson', function(data) {
+      allFeatures = new ol.format.GeoJSON().readFeatures(data, {
+        featureProjection: 'EPSG:3857'
+      });
+    });
+
+    // 가장 가까운 경보만 표시
+    function showClosestPerDevice(date, hour) {
+      const targetTime = new Date(`${date}T${hour}:00:00`);
+      const closestMap = new Map();
+
+      for (const f of allFeatures) {
+        const timeStr = f.get('경보 일시');
+        const device = f.get('장치번호');
+        if (!timeStr || !device) continue;
+
+        const featureTime = new Date(timeStr.replace(' ', 'T'));
+        const diff = Math.abs(featureTime - targetTime);
+
+        const existing = closestMap.get(device);
+        if (!existing || diff < existing.diff) {
+          closestMap.set(device, { feature: f, diff });
+        }
+      }
+
+      const closestFeatures = Array.from(closestMap.values()).map(e => e.feature);
+      vectorSource.clear();
+      vectorSource.addFeatures(closestFeatures);
+      overlay.setPosition(undefined);
+    }
+
+    $('#date, #hour').on('change', function () {
+      const date = $('#date').val();
+      const hour = $('#hour').val();
+      if (!date || !hour || allFeatures.length === 0) return;
+      showClosestPerDevice(date, hour);
+    });
+
+    map.on('singleclick', function(evt) {
+        overlay.setPosition(undefined);
+        map.forEachFeatureAtPixel(evt.pixel, function(feature) {
+            const messageType = feature.get('메시지 종류') || '정보 없음';
+            const timestamp = feature.get('경보 일시') || '시간 정보 없음';
+            const device = feature.get('장치번호') || '';
+            const signal = feature.get('이상신호') || '';
+            const value = feature.get('측정값') || '';
+            const risk = feature.get('위험요소') || '';
+            const alert = feature.get('경보발생') ? 'O' : 'X';
+            const dewPoint = feature.get('이슬점') || '정보 없음';
+            const humidity = feature.get('습도') || '정보 없음';
+            const temperature  = feature.get('기온') || '정보 없음';
+            const wind  = feature.get('풍속') || '정보 없음';
+
+
+            popup.innerHTML = `
+              <div style="font-size:13px; font-family:Arial, sans-serif;">
+                <div style="font-weight:bold; font-size:14px; margin-bottom:4px;">
+                  장치번호: <span style="word-break:keep-all;">${device}</span>
+                </div>
+                <table style="border-collapse:collapse; width:100%; border: 1px solid #ccc;">
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">📅 <strong>날짜</strong></td><td style="border: 1px solid #ccc; padding:4px;">${timestamp}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">⚡ <strong>이상신호</strong></td><td style="border: 1px solid #ccc; padding:4px;">${signal}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">📏 <strong>측정값</strong></td><td style="border: 1px solid #ccc; padding:4px;">${value}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">🌡️ <strong>기온</strong></td><td style="border: 1px solid #ccc; padding:4px;">${temperature}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">💧 <strong>이슬점</strong></td><td style="border: 1px solid #ccc; padding:4px;">${dewPoint}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">💦 <strong>습도</strong></td><td style="border: 1px solid #ccc; padding:4px;">${humidity}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">🌬️ <strong>풍속</strong></td><td style="border: 1px solid #ccc; padding:4px;">${wind}</td></tr>
+                  <tr><td style="border: 1px solid #ccc; padding:4px;">⚠️ <strong>위험요소</strong></td><td style="border: 1px solid #ccc; padding:4px;">${risk}</td></tr>
+                </table>
+              </div>
+            `;
+            overlay.setPosition(evt.coordinate);
+        });
+        });
+        
+  </script>
+</body>
+</html>
